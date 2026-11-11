@@ -1,0 +1,61 @@
+name: Deploy
+
+# Pushes the app to Zapier on every push to main, once tests and validation pass, and on demand (Run workflow) to redeploy.
+# `zapier-platform push` uploads the version in package.json, replacing that version's build: bump `version` for a release
+# Zapier users are migrated to, keep it for a fix to the same one.
+#
+# Needs three repository secrets (Settings, Secrets and variables, Actions):
+#   ZAPIER_DEPLOY_KEY  a deploy key from developer.zapier.com, Settings, Deploy Keys, made by the account that owns the app
+#   ZAPIER_APP_ID      the `id` in .zapierapprc
+#   ZAPIER_APP_KEY     the `key` in .zapierapprc
+# .zapierapprc stays out of git; this job writes it from the two secrets.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zapier-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (no install scripts)
+        run: npm ci --ignore-scripts
+      - name: Test
+        run: npm test
+      - name: Validate the app
+        run: npx zapier-platform validate --without-style
+      - name: Write .zapierapprc
+        env:
+          ZAPIER_APP_ID: ${{ secrets.ZAPIER_APP_ID }}
+          ZAPIER_APP_KEY: ${{ secrets.ZAPIER_APP_KEY }}
+        run: |
+          if [ -z "$ZAPIER_APP_ID" ] || [ -z "$ZAPIER_APP_KEY" ]; then
+            echo "::error::Set ZAPIER_APP_ID and ZAPIER_APP_KEY from .zapierapprc in the repository's secrets."
+            exit 1
+          fi
+          node -e 'require("fs").writeFileSync(".zapierapprc", JSON.stringify({ id: Number(process.env.ZAPIER_APP_ID), key: process.env.ZAPIER_APP_KEY }))'
+      - name: Push to Zapier
+        env:
+          ZAPIER_DEPLOY_KEY: ${{ secrets.ZAPIER_DEPLOY_KEY }}
+        run: |
+          if [ -z "$ZAPIER_DEPLOY_KEY" ]; then
+            echo "::error::Set ZAPIER_DEPLOY_KEY (developer.zapier.com, Settings, Deploy Keys) in the repository's secrets."
+            exit 1
+          fi
+          npx zapier-platform push
